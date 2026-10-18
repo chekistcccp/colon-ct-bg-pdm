@@ -238,7 +238,8 @@ def run_experiments(config_path: str, smoke: bool = False, force_features: bool 
                 _budget_jobs(cfg, int(fold["fold"]), False), cfg, methods
             ))
 
-    results_path = output_dir / "experiment_results.json"
+    # Keep smoke runs separate so they can never overwrite full experiment results.
+    results_path = (output_dir / "smoke" / "experiment_results.json") if smoke else (output_dir / "experiment_results.json")
     fingerprint_payload = json.dumps({"config": cfg, "smoke": bool(smoke)}, sort_keys=True, default=str)
     config_fingerprint = hashlib.sha256(fingerprint_payload.encode("utf-8")).hexdigest()
     results: dict[str, Any] | None = None
