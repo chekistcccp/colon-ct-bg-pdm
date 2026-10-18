@@ -308,19 +308,23 @@ def fit_score_scaler(
     if method not in DUAL_METHODS:
         return {}
     rng = np.random.default_rng(seed)
-    collected: dict[str, list[np.ndarray]] = {"d_normal": [], "log_ratio": []}
-    remaining = max_samples
-    for item in validation_raw:
-        for key in collected:
-            arr = item[key].ravel()
-            if len(arr) > max(1, remaining):
-                arr = arr[rng.choice(len(arr), size=max(1, remaining), replace=False)]
-            collected[key].append(arr.astype(np.float32))
-        remaining -= min(remaining, sum(len(item[k].ravel()) for k in collected))
-        if remaining <= 0:
-            break
     scaler: dict[str, float] = {}
-    for key, parts in collected.items():
+    # Sample each component independently across multiple validation patients.
+    # This avoids accidentally calibrating from only the first (often large) volume.
+    for key in ("d_normal", "log_ratio"):
+        parts: list[np.ndarray] = []
+        collected_count = 0
+        for item in validation_raw:
+            if collected_count >= max_samples:
+                break
+            arr = item[key].ravel()
+            take = min(len(arr), max_samples - collected_count)
+            if take <= 0:
+                continue
+            if len(arr) > take:
+                arr = arr[rng.choice(len(arr), size=take, replace=False)]
+            parts.append(arr.astype(np.float32))
+            collected_count += len(arr)
         values = np.concatenate(parts) if parts else np.asarray([0.0, 1.0])
         median = float(np.median(values))
         q25, q75 = np.percentile(values, [25, 75])
