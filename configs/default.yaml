@@ -1,0 +1,64 @@
+project_name: colon-ct-bg-pdm
+seed: 42
+
+data:
+  root: data
+  images_dir_name: imagesTr
+  labels_dir_name: labelsTr
+  expected_labeled_cases: 126
+
+features:
+  cache_dir: cache/features
+  input_size: 224
+  intensity_window: [-200.0, 300.0]
+  pretrained: true
+  batch_size: 16
+  num_workers: 0
+  cache_version: 1
+
+experiment:
+  output_dir: outputs/full
+  split_file: outputs/splits.json
+  folds: 5
+  validation_fraction: 0.10
+  budgets: [0.10, 0.20, 0.40, 1.00]
+  stress_budget: 0.05
+  stress_repetitions: 3
+  methods:
+    - knn_single_random
+    - patchcore_single_coreset
+    - padim_diagonal
+    - dual_unprotected
+    - boundary_only
+    - patient_balanced_only
+    - bgpdm
+  max_test_cases: null
+  max_val_cases: null
+
+memory:
+  boundary_mm: 2.0
+  per_case_normal_cap: 2000
+  per_case_tumor_cap: 1000
+  patient_quota: 256
+  max_candidate_pool_normal: 10000
+  max_candidate_pool_tumor: 5000
+  normal_bank_size: 5000
+  tumor_bank_size: 2000
+  coreset_projection_dim: 32
+  knn_k: 3
+  query_chunk_size: 2048
+  eps: 1.0e-6
+  dual_alpha: 0.5
+  padim_min_variance: 0.01
+
+evaluation:
+  threshold_candidates: 64
+  aupro_thresholds: 80
+  aupro_max_fpr: 0.30
+  nsd_tolerance_mm: 2.0
+  bootstrap_repetitions: 2000
+
+runtime:
+  device: auto
+  save_per_case_metrics: true
+  write_json_after_each_run: true
