@@ -253,6 +253,8 @@ def run_experiments(config_path: str, smoke: bool = False, force_features: bool 
         ),
         "runs": [],
         "paired_comparisons": [],
+        "contamination_stress_runs": [],
+        "contamination_paired_comparisons": [],
         "warnings": [],
     }
     if not smoke and len(cases) != int(cfg["data"].get("expected_labeled_cases", 126)):
@@ -374,6 +376,110 @@ def run_experiments(config_path: str, smoke: bool = False, force_features: bool 
                         ),
                     })
                 _save_results(results_path, results)
+
+    # Controlled contamination stress test: replace a known fraction of the
+    # non-tumor bank with training-only tumor prototypes, then evaluate on the
+    # same held-out test patients. It is a synthetic robustness test, not an
+    # estimate of real-world annotation error rates.
+    if not smoke and bool(cfg["experiment"].get("run_contamination_stress", True)):
+        stress_methods = list(cfg["experiment"].get(
+            "contamination_stress_methods",
+            ["patchcore_single_coreset", "dual_unprotected", "bgpdm"]
+        ))
+        contamination_levels = [float(v) for v in cfg["experiment"].get(
+            "contamination_levels", [0.0, 0.01, 0.05, 0.10]
+        )]
+        for fold_idx, full_train_ids, val_ids, test_ids, _jobs, run_cfg, available_methods in fold_jobs:
+            stress_methods_fold = [m for m in stress_methods if m in available_methods]
+            if not stress_methods_fold:
+                continue
+            for level_index, contamination_fraction in enumerate(contamination_levels):
+                rows_by_method: dict[str, list[dict[str, Any]]] = {}
+                for method_index, method in enumerate(stress_methods_fold):
+                    stress_seed = int(cfg["seed"] + fold_idx * 10000 + level_index * 1000 + method_index * 101)
+                    print(
+                        f"[BG-PDM] Contamination stress fold={fold_idx} "
+                        f"method={method} fraction={contamination_fraction:.2%}"
+                    )
+                    start_time = time.time()
+                    memory = build_memory(
+                        full_train_ids, cache_dir, method, run_cfg,
+                        seed=stress_seed, device=device,
+                        contamination_fraction=contamination_fraction,
+                    )
+                    raw_val, _val_scores_unused, val_labels_low = _score_ids(
+                        val_ids, cache_dir, memory, method, run_cfg, device
+                    )
+                    scaler = fit_score_scaler(raw_val, method, seed=stress_seed + 17)
+                    val_scores = [
+                        combine_score(raw, method, scaler, float(run_cfg["memory"].get("dual_alpha", 0.5)))
+                        for raw in raw_val
+                    ]
+                    threshold = calibrate_threshold(
+                        val_scores, val_labels_low,
+                        candidate_count=int(run_cfg["evaluation"].get("threshold_candidates", 64))
+                    )
+                    case_rows = []
+                    for case_id in test_ids:
+                        data = _read_cache(cache_dir, case_id)
+                        raw = score_case(data["features"], memory, run_cfg, device)
+                        score = combine_score(raw, method, scaler, float(run_cfg["memory"].get("dual_alpha", 0.5)))
+                        row = evaluate_case(
+                            score_low=score,
+                            target_low=data["labels"],
+                            target_eval=data["labels_eval"],
+                            threshold=threshold,
+                            spacing_xyz=tuple(float(v) for v in data["spacing_xyz"]),
+                            original_shape_xyz=tuple(int(v) for v in data["original_shape_xyz"]),
+                            input_size=int(data["input_size"].item()),
+                            nsd_tolerance_mm=float(run_cfg["evaluation"].get("nsd_tolerance_mm", 2.0)),
+                            aupro_thresholds=int(run_cfg["evaluation"].get("aupro_thresholds", 80)),
+                            aupro_max_fpr=float(run_cfg["evaluation"].get("aupro_max_fpr", 0.30)),
+                        )
+                        row["case_id"] = case_id
+                        case_rows.append(row)
+                    summary = aggregate_case_metrics(case_rows)
+                    metric_keys = [k for k in summary.keys() if k != "n_cases"]
+                    ci = bootstrap_mean_ci(
+                        case_rows, metric_keys,
+                        int(run_cfg["evaluation"].get("bootstrap_repetitions", 2000)),
+                        stress_seed + 29,
+                    )
+                    stress_entry = {
+                        "fold": int(fold_idx),
+                        "contamination_fraction": float(contamination_fraction),
+                        "method": method,
+                        "n_train_cases": int(len(full_train_ids)),
+                        "n_validation_cases": int(len(val_ids)),
+                        "n_test_cases": int(len(test_ids)),
+                        "threshold_from_validation": float(threshold),
+                        "memory_metadata": memory.get("metadata", {}),
+                        "summary": summary,
+                        "bootstrap_95_ci": ci,
+                        "per_case_metrics": case_rows if bool(run_cfg["runtime"].get("save_per_case_metrics", True)) else [],
+                        "runtime_seconds": float(time.time() - start_time),
+                    }
+                    results["contamination_stress_runs"].append(stress_entry)
+                    rows_by_method[method] = case_rows
+                    _save_results(results_path, results)
+
+                if "bgpdm" in rows_by_method:
+                    for baseline in stress_methods_fold:
+                        if baseline == "bgpdm":
+                            continue
+                        results["contamination_paired_comparisons"].append({
+                            "fold": int(fold_idx),
+                            "contamination_fraction": float(contamination_fraction),
+                            "comparison": "bgpdm_minus_baseline",
+                            "method_a": "bgpdm",
+                            "method_b": baseline,
+                            "metrics": paired_bootstrap_difference(
+                                rows_by_method["bgpdm"], rows_by_method[baseline], PRIMARY_METRICS,
+                                int(cfg["evaluation"].get("bootstrap_repetitions", 2000)),
+                                int(cfg["seed"] + fold_idx * 10000 + level_index * 1000 + 9000),
+                            ),
+                        })
+                    _save_results(results_path, results)
 
     results["status"] = "completed"
     results["completed_at_unix"] = int(time.time())
