@@ -186,8 +186,11 @@ def build_memory(
     cfg: dict[str, Any],
     seed: int,
     device: torch.device,
+    contamination_fraction: float = 0.0,
 ) -> dict[str, Any]:
     cache_dir = Path(cache_dir)
+    if not 0.0 <= float(contamination_fraction) < 1.0:
+        raise ValueError("contamination_fraction must be in [0, 1).")
     if method == "padim_diagonal":
         padim = _fit_padim(
             case_ids, cache_dir, float(cfg["memory"].get("padim_min_variance", 0.01))
@@ -209,6 +212,27 @@ def build_memory(
             projection_dim=int(cfg["memory"]["coreset_projection_dim"]),
             seed=seed + 101, device=device
         )
+
+    contamination_count = 0
+    if contamination_fraction > 0:
+        # Controlled stress test: replace a known fraction of normal-bank prototypes
+        # with tumor features sampled only from the current training partition.
+        tumor_source = _build_candidate_pool(
+            case_ids, cache_dir, "tumor", boundary_guard, patient_balanced, cfg, seed + 307
+        )
+        contamination_count = min(
+            len(normal_bank),
+            max(1, int(round(len(normal_bank) * float(contamination_fraction))))
+        )
+        contamination_rng = np.random.default_rng(seed + 401)
+        if len(tumor_source) == 0:
+            raise RuntimeError("Cannot inject memory-bank contamination: no tumor candidates found.")
+        tumor_indices = contamination_rng.choice(
+            len(tumor_source), size=contamination_count, replace=(len(tumor_source) < contamination_count)
+        )
+        bank_indices = contamination_rng.choice(len(normal_bank), size=contamination_count, replace=False)
+        normal_bank = np.asarray(normal_bank, dtype=np.float16).copy()
+        normal_bank[bank_indices] = tumor_source[tumor_indices]
 
     tumor_bank = None
     tumor_count = 0
@@ -236,6 +260,8 @@ def build_memory(
             "tumor_prototypes": 0 if tumor_bank is None else int(len(tumor_bank)),
             "boundary_guard": boundary_guard,
             "patient_balanced": patient_balanced,
+            "normal_bank_contamination_fraction": float(contamination_fraction),
+            "normal_bank_contamination_prototypes": int(contamination_count),
         },
     }
 
