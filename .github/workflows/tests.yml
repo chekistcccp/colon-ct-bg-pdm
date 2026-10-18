@@ -1,0 +1,27 @@
+name: Python checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install CPU PyTorch
+        run: pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision
+      - name: Install project dependencies
+        run: pip install -r requirements.txt
+      - name: Compile source
+        run: python -m compileall -q src tests
+      - name: Run unit tests
+        run: pytest -q
