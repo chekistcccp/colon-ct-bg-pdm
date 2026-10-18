@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
 import json
 import math
 import time
@@ -238,29 +239,43 @@ def run_experiments(config_path: str, smoke: bool = False, force_features: bool 
             ))
 
     results_path = output_dir / "experiment_results.json"
-    results: dict[str, Any] = {
-        "project": "BG-PDM",
-        "status": "running",
-        "config_path": str(config_path),
-        "seed": int(cfg["seed"]),
-        "device": str(device),
-        "dataset": "MSD Task10 Colon",
-        "task_definition": "low-label / weakly supervised tumor localization; masked-out tissue is not assumed healthy",
-        "metric_resolution_note": (
-            "Pixel AUROC/AUPRC and AUPRO are computed at the feature grid. "
-            "Dice is reported both at feature grid and after score upsampling to input resolution; "
-            "HD95/NSD use the feature grid with physical spacing correction."
-        ),
-        "runs": [],
-        "paired_comparisons": [],
-        "contamination_stress_runs": [],
-        "contamination_paired_comparisons": [],
-        "warnings": [],
-    }
+    fingerprint_payload = json.dumps({"config": cfg, "smoke": bool(smoke)}, sort_keys=True, default=str)
+    config_fingerprint = hashlib.sha256(fingerprint_payload.encode("utf-8")).hexdigest()
+    results: dict[str, Any] | None = None
+    if results_path.exists() and not force_features:
+        try:
+            previous = json.loads(results_path.read_text(encoding="utf-8"))
+            if previous.get("status") == "running" and previous.get("config_fingerprint") == config_fingerprint:
+                results = previous
+                print("[BG-PDM] Resuming matching interrupted experiment from existing JSON.")
+        except Exception:
+            results = None
+    if results is None:
+        results = {
+            "project": "BG-PDM",
+            "status": "running",
+            "config_path": str(config_path),
+            "config_fingerprint": config_fingerprint,
+            "seed": int(cfg["seed"]),
+            "device": str(device),
+            "dataset": "MSD Task10 Colon",
+            "task_definition": "low-label / weakly supervised tumor localization; masked-out tissue is not assumed healthy",
+            "metric_resolution_note": (
+                "Pixel AUROC/AUPRC and AUPRO are computed at the feature grid. "
+                "Dice is reported both at feature grid and after score upsampling to input resolution; "
+                "HD95/NSD use the feature grid with physical spacing correction."
+            ),
+            "runs": [],
+            "paired_comparisons": [],
+            "contamination_stress_runs": [],
+            "contamination_paired_comparisons": [],
+            "warnings": [],
+        }
+    results["status"] = "running"
     if not smoke and len(cases) != int(cfg["data"].get("expected_labeled_cases", 126)):
-        results["warnings"].append(
-            f"Found {len(cases)} cases, expected {cfg['data'].get('expected_labeled_cases', 126)}."
-        )
+        warning = f"Found {len(cases)} cases, expected {cfg['data'].get('expected_labeled_cases', 126)}."
+        if warning not in results["warnings"]:
+            results["warnings"].append(warning)
     _save_results(results_path, results)
 
     for fold_idx, full_train_ids, val_ids, test_ids, jobs, run_cfg, methods in fold_jobs:
@@ -282,6 +297,12 @@ def run_experiments(config_path: str, smoke: bool = False, force_features: bool 
             print(f"[BG-PDM] {budget_name}: selected {len(selected_train_ids)}/{len(full_train_ids)} train cases")
             entries_for_comparison: dict[str, list[dict[str, Any]]] = {}
             for method_index, method in enumerate(methods):
+                run_key = f"{fold_idx}|{budget_name}|{method}"
+                existing_entry = next((item for item in results["runs"] if item.get("run_key") == run_key), None)
+                if existing_entry is not None:
+                    entries_for_comparison[method] = existing_entry.get("per_case_metrics", [])
+                    print(f"[BG-PDM] Resume: already completed {run_key}")
+                    continue
                 start_time = time.time()
                 print(f"[BG-PDM] Building method={method}")
                 memory = build_memory(
@@ -329,6 +350,7 @@ def run_experiments(config_path: str, smoke: bool = False, force_features: bool 
                 ci = bootstrap_mean_ci(case_rows, metric_keys, repetitions, int(budget_seed + method_index))
                 elapsed = time.time() - start_time
                 entry = {
+                    "run_key": run_key,
                     "fold": int(fold_idx),
                     "budget_name": budget_name,
                     "budget_fraction": float(budget_fraction),
@@ -361,7 +383,11 @@ def run_experiments(config_path: str, smoke: bool = False, force_features: bool 
                 for baseline in methods:
                     if baseline == "bgpdm":
                         continue
+                    comparison_key = f"{fold_idx}|{budget_name}|{baseline}"
+                    if any(item.get("comparison_key") == comparison_key for item in results["paired_comparisons"]):
+                        continue
                     results["paired_comparisons"].append({
+                        "comparison_key": comparison_key,
                         "fold": int(fold_idx),
                         "budget_name": budget_name,
                         "comparison": "bgpdm_minus_baseline",
@@ -396,6 +422,15 @@ def run_experiments(config_path: str, smoke: bool = False, force_features: bool 
             for level_index, contamination_fraction in enumerate(contamination_levels):
                 rows_by_method: dict[str, list[dict[str, Any]]] = {}
                 for method_index, method in enumerate(stress_methods_fold):
+                    stress_key = f"{fold_idx}|{contamination_fraction:.4f}|{method}"
+                    existing_stress = next(
+                        (item for item in results["contamination_stress_runs"] if item.get("stress_key") == stress_key),
+                        None
+                    )
+                    if existing_stress is not None:
+                        rows_by_method[method] = existing_stress.get("per_case_metrics", [])
+                        print(f"[BG-PDM] Resume: already completed contamination stress {stress_key}")
+                        continue
                     stress_seed = int(cfg["seed"] + fold_idx * 10000 + level_index * 1000 + method_index * 101)
                     print(
                         f"[BG-PDM] Contamination stress fold={fold_idx} "
@@ -446,6 +481,7 @@ def run_experiments(config_path: str, smoke: bool = False, force_features: bool 
                         stress_seed + 29,
                     )
                     stress_entry = {
+                        "stress_key": stress_key,
                         "fold": int(fold_idx),
                         "contamination_fraction": float(contamination_fraction),
                         "method": method,
@@ -467,7 +503,11 @@ def run_experiments(config_path: str, smoke: bool = False, force_features: bool 
                     for baseline in stress_methods_fold:
                         if baseline == "bgpdm":
                             continue
+                        comparison_key = f"{fold_idx}|{contamination_fraction:.4f}|{baseline}"
+                        if any(item.get("comparison_key") == comparison_key for item in results["contamination_paired_comparisons"]):
+                            continue
                         results["contamination_paired_comparisons"].append({
+                            "comparison_key": comparison_key,
                             "fold": int(fold_idx),
                             "contamination_fraction": float(contamination_fraction),
                             "comparison": "bgpdm_minus_baseline",
