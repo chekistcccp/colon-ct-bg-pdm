@@ -29,5 +29,14 @@ else
   "$PYTHON_BIN" -m bgpdm.experiment --config configs/default.yaml
 fi
 
+if [[ "${BG_PDM_RUN_NNUNET:-0}" == "1" ]]; then
+  if [[ "${BG_PDM_SMOKE:-0}" == "1" ]]; then
+    echo "[BG-PDM] Skipping nnU-Net reference in smoke mode."
+  else
+    echo "[BG-PDM] Optional nnU-Net v2 3d_fullres baseline requested."
+    "$PYTHON_BIN" -m bgpdm.nnunet_baseline --config configs/default.yaml
+  fi
+fi
+
 echo "[BG-PDM] Finished. Metrics: outputs/full/experiment_results.json"
 echo "[BG-PDM] Outputs remain local and are excluded from Git."
