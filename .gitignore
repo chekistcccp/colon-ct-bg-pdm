@@ -1,0 +1,48 @@
+# Private medical data and archives
+data/
+*.nii
+*.nii.gz
+*.mha
+*.mhd
+*.nrrd
+*.dcm
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+
+# Local environments and secrets
+.venv/
+venv/
+.env
+.env.*
+*.local
+.conda/
+
+# Weights, checkpoints, caches
+checkpoints/
+weights/
+models/
+cache/
+features/
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.faiss
+*.index
+
+# Local outputs and results: never commit
+outputs/
+runs/
+wandb/
+mlruns/
+logs/
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
