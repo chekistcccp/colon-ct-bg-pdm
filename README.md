@@ -66,6 +66,10 @@ MSD Colon 的掩膜外区域不等同于健康组织；本项目利用有限肿�
 
 Pixel AUROC、Pixel AUPRC 与 AUPRO 在特征网格计算；Dice 同时报告特征网格和分数上采样至输入分辨率后的结果；HD95/NSD 在特征网格上按物理 spacing 修正。上采样不会恢复特征网格未预测出的细节，报告时必须明确这一限制。
 
-## 尚未整合的基线
+## 可选的 nnU-Net v2 基线
 
-nnU-Net v2 仍是研究设计中的强监督分割参考，但目前没有被自动集成到 run.sh。需要先实现与外层患者级五折完全一致的训练/验证/测试划分适配，再报告其结果；不能拿不同划分的公开数字替代当前实验。
+仓库包含使用相同外层患者级五折划分的 nnU-Net v2 3D full-resolution 参考脚本，但它默认关闭，因为训练开销很大。需先单独安装 nnU-Net v2 并设置 nnUNet_raw、nnUNet_preprocessed、nnUNet_results 三个环境变量，然后运行：
+
+    BG_PDM_RUN_NNUNET=1 bash run.sh
+
+该步骤仅训练 100% 标注预算下的监督参考，并将结果追加到同一个 experiment_results.json。Smoke 模式会跳过 nnU-Net。正式使用前应检查 nnU-Net v2 版本、数据集规划和 checkpoint 路径；若该步骤报错，不能把 nnU-Net 结果标记为已完成。
