@@ -24,6 +24,12 @@ experiment:
   budgets: [0.10, 0.20, 0.40, 1.00]
   stress_budget: 0.05
   stress_repetitions: 3
+  run_contamination_stress: true
+  contamination_levels: [0.0, 0.01, 0.05, 0.10]
+  contamination_stress_methods:
+    - patchcore_single_coreset
+    - dual_unprotected
+    - bgpdm
   methods:
     - knn_single_random
     - patchcore_single_coreset
