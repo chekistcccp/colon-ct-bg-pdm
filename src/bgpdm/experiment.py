@@ -86,7 +86,11 @@ def _score_ids(
         data = _read_cache(cache_dir, case_id)
         raw = score_case(data["features"], memory, cfg, device)
         raw_list.append(raw)
-        score = combine_score(raw, method, scaler or {}, float(cfg["memory"].get("dual_alpha", 0.5)))
+        if scaler is None and "d_normal" in raw:
+            # Raw dual components are scaled after the validation-only calibration pass.
+            score = raw["d_normal"]
+        else:
+            score = combine_score(raw, method, scaler or {}, float(cfg["memory"].get("dual_alpha", 0.5)))
         scores.append(score)
         labels_low.append(data["labels"].astype(np.uint8))
     return raw_list, scores, labels_low
@@ -261,12 +265,18 @@ def run_experiments(config_path: str, smoke: bool = False, force_features: bool 
         if not val_ids or not test_ids:
             raise RuntimeError(f"Fold {fold_idx} has an empty validation/test partition.")
         print(f"[BG-PDM] Fold {fold_idx}: train={len(full_train_ids)} val={len(val_ids)} test={len(test_ids)}")
-        permutation_rng = np.random.default_rng(int(cfg["seed"]) + fold_idx * 1009)
-        train_permutation = list(np.asarray(full_train_ids, dtype=object)[permutation_rng.permutation(len(full_train_ids))])
+        base_rng = np.random.default_rng(int(cfg["seed"]) + fold_idx * 1009)
+        base_permutation = [str(x) for x in np.asarray(full_train_ids, dtype=object)[base_rng.permutation(len(full_train_ids))]]
 
         for budget_name, budget_fraction, budget_seed in jobs:
+            # The 5% stress repetitions use independent patient subsets; ordinary budgets are nested.
+            if budget_name.startswith("stress_"):
+                local_rng = np.random.default_rng(int(budget_seed))
+                train_permutation = [str(x) for x in np.asarray(full_train_ids, dtype=object)[local_rng.permutation(len(full_train_ids))]]
+            else:
+                train_permutation = base_permutation
             n_train = max(1, int(math.ceil(len(train_permutation) * budget_fraction)))
-            selected_train_ids = train_permutation[:n_train]
+            selected_train_ids = [str(x) for x in train_permutation[:n_train]]
             print(f"[BG-PDM] {budget_name}: selected {len(selected_train_ids)}/{len(full_train_ids)} train cases")
             entries_for_comparison: dict[str, list[dict[str, Any]]] = {}
             for method_index, method in enumerate(methods):
